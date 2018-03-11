@@ -19,12 +19,12 @@ namespace WebSocketApp.Model
 
         public static implicit operator string(ChatMessage instance)
         {
-            return JsonConvert.SerializeObject(instance);
+            return JsonConvert.SerializeObject(instance, typeof(ChatMessage), JsonSettings.Serializer);
         }
 
         public static implicit operator RedisValue(ChatMessage instance)
         {
-            return JsonConvert.SerializeObject(instance);
+            return JsonConvert.SerializeObject(instance, typeof(ChatMessage), JsonSettings.Serializer);
         }
     }
 }

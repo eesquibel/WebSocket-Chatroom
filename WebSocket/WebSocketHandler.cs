@@ -1,5 +1,6 @@
 ﻿using Microsoft.AspNetCore.Http;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using StackExchange.Redis;
 using System;
 using System.Collections.Concurrent;
@@ -32,13 +33,18 @@ namespace WebSocketApp
 
         static void ChannelMessage(RedisChannel channel, RedisValue message)
         {
-            var buffer = new ArraySegment<byte>(System.Text.Encoding.UTF8.GetBytes(message));
+            var obj = JsonConvert.DeserializeObject(message, JsonSettings.Serializer);
 
-            foreach (var socket in Sockets)
+            if (obj is ChatMessage)
             {
-                socket.Value.Send(buffer);
+                var payload = new WebWrapper { Payload = obj };
+                var buffer = new ArraySegment<byte>(Encoding.UTF8.GetBytes(payload));
+
+                foreach (var socket in Sockets)
+                {
+                    socket.Value.Send(buffer);
+                }
             }
-            
         }
 
         HttpContext Context { get; set; }
@@ -56,19 +62,20 @@ namespace WebSocketApp
             Database.SortedSetRangeByRankAsync("Messages", -10, -1).ContinueWith<Task>(task =>
             {
                 var messages = new ChatMessageCollection(task.Result.Select(value => JsonConvert.DeserializeObject<ChatMessage>(value)).ToDictionary(m => m.Timestamp.Ticks));
-                return Send(messages);
+                var wrapper = new WebWrapper { Payload = messages };
+                return Send(wrapper);
             });
         }
 
-        Task<long> ChannelPublish(ArraySegment<byte> message)
+        void ChannelPublish(ArraySegment<byte> message)
         {
             RedisValue value = Encoding.UTF8.GetString(message.ToArray());
-            return Subscriber.PublishAsync(Channel, value);
+            Subscriber.Publish(Channel, value, CommandFlags.FireAndForget);
         }
 
-        Task<long> ChannelPublish(string message)
+        void ChannelPublish(string message)
         {
-            return Subscriber.PublishAsync(Channel, message);
+            Subscriber.PublishAsync(Channel, message, CommandFlags.FireAndForget);
         }
 
         public Task Send(ArraySegment<byte> message)
@@ -93,17 +100,30 @@ namespace WebSocketApp
                 var resultBuffer = new ArraySegment<byte>(buffer, 0, result.Count);
                 var resultArray = resultBuffer.ToArray();
                 var resultString = Encoding.UTF8.GetString(resultArray);
-                var message = JsonConvert.DeserializeObject<ChatMessage>(resultString);
+                var message = JsonConvert.DeserializeObject(resultString, JsonSettings.Serializer);
 
-                message.Id = Id;
-                message.Timestamp = DateTime.UtcNow;
+                if (message is JObject)
+                {
+                    var jobject = (JObject)message;
+                    if (jobject["Type"] != null && jobject["Payload"] != null)
+                    {
+                        switch(jobject["Type"].ToString())
+                        {
+                            case "ChatMessage":
+                                var chat = jobject["Payload"].ToObject<ChatMessage>();
 
-                Database.SortedSetAddAsync("Messages", message, message.Timestamp.Ticks);
-                ChannelPublish(message);
+                                chat.Id = this.Id;
+                                chat.Timestamp = DateTime.UtcNow;
+
+                                Database.SortedSetAdd("Messages", chat, chat.Timestamp.Ticks, CommandFlags.FireAndForget);
+                                ChannelPublish(chat);
+                                break;
+                        }
+                    }
+                }
 
                 result = await WebSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
             }
-
 
             WebSocketHandler removed;
             Sockets.TryRemove(Id, out removed);
