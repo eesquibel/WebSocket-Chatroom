@@ -53,7 +53,7 @@ namespace WebSocketApp
                     {
                         context.Response.StatusCode = 400;
                     }
-                }
+                } else
                 {
                     await next();
                 }
